@@ -1,0 +1,25 @@
+{
+  "name": "EasyText - 老年人友好文字编辑",
+  "short_name": "EasyText",
+  "description": "专为老年人设计的简单文字处理软件，支持大字体、护眼模式、语音朗读",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f5f5",
+  "theme_color": "#424242",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "/vite.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ],
+  "categories": ["productivity", "utilities"],
+  "lang": "zh-CN",
+  "scope": "/"
+}

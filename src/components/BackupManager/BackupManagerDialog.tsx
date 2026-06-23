@@ -37,6 +37,24 @@ export const BackupManagerDialog: React.FC<BackupManagerDialogProps> = ({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [exportFormat, setExportFormat] = useState<'txt' | 'docx'>('txt');
 
+  // 确认对话框状态
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmMessage, setConfirmMessage] = useState('');
+  const [confirmTitle, setConfirmTitle] = useState('');
+  const [confirmAction, setConfirmAction] = useState<(() => void) | null>(null);
+
+  const showConfirm = (title: string, message: string, action: () => void) => {
+    setConfirmTitle(title);
+    setConfirmMessage(message);
+    setConfirmAction(() => action);
+    setConfirmOpen(true);
+  };
+
+  const handleConfirm = () => {
+    setConfirmOpen(false);
+    confirmAction?.();
+  };
+
   React.useEffect(() => {
     if (open) {
       setBackups(BackupManager.getBackups());
@@ -55,18 +73,18 @@ export const BackupManagerDialog: React.FC<BackupManagerDialogProps> = ({
   };
 
   const handleRestore = (backup: BackupItem) => {
-    if (
-      window.confirm(
-        `确定恢复到 ${new Date(backup.timestamp).toLocaleString()} 的备份吗？当前内容将被覆盖。`
-      )
-    ) {
-      onRestore(backup.content, backup.fileName);
-      onClose();
-    }
+    showConfirm(
+      '确认恢复',
+      `确定恢复到 ${new Date(backup.timestamp).toLocaleString()} 的备份吗？当前内容将被覆盖。`,
+      () => {
+        onRestore(backup.content, backup.fileName);
+        onClose();
+      }
+    );
   };
 
   const handleDelete = (id: string) => {
-    if (window.confirm('确定删除此备份吗？')) {
+    showConfirm('确认删除', '确定删除此备份吗？', () => {
       BackupManager.deleteBackup(id);
       setBackups(BackupManager.getBackups());
       setSelectedIds((prev) => {
@@ -74,7 +92,7 @@ export const BackupManagerDialog: React.FC<BackupManagerDialogProps> = ({
         next.delete(id);
         return next;
       });
-    }
+    });
   };
 
   const handleExportSelected = async () => {
@@ -98,22 +116,23 @@ export const BackupManagerDialog: React.FC<BackupManagerDialogProps> = ({
       alert('请先选择要删除的备份');
       return;
     }
-    if (window.confirm(`确定删除选中的 ${selectedIds.size} 个备份吗？`)) {
+    showConfirm('确认删除', `确定删除选中的 ${selectedIds.size} 个备份吗？`, () => {
       selectedIds.forEach((id) => BackupManager.deleteBackup(id));
       setBackups(BackupManager.getBackups());
       setSelectedIds(new Set());
-    }
+    });
   };
 
   const handleClearAll = () => {
-    if (window.confirm('确定清空所有备份吗？此操作不可恢复。')) {
+    showConfirm('确认清空', '确定清空所有备份吗？此操作不可恢复。', () => {
       BackupManager.clearAllBackups();
       setBackups([]);
       setSelectedIds(new Set());
-    }
+    });
   };
 
   return (
+    <>
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
       <DialogTitle sx={{ fontSize: '1.5rem', fontWeight: 'bold' }}>
         备份管理
@@ -251,5 +270,36 @@ export const BackupManagerDialog: React.FC<BackupManagerDialogProps> = ({
         </Button>
       </DialogActions>
     </Dialog>
+
+    {/* 确认对话框 */}
+    <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)} fullWidth maxWidth="sm">
+      <DialogTitle sx={{ fontSize: '1.5rem', fontWeight: 'bold' }}>
+        {confirmTitle}
+      </DialogTitle>
+      <DialogContent>
+        <Typography sx={{ fontSize: '1.1rem', lineHeight: 1.8 }}>
+          {confirmMessage}
+        </Typography>
+      </DialogContent>
+      <DialogActions>
+        <Button
+          onClick={() => setConfirmOpen(false)}
+          variant="outlined"
+          size="large"
+          sx={{ fontSize: '1.05rem', minHeight: 48, color: '#616161', borderColor: '#bdbdbd', '&:hover': { borderColor: '#616161' } }}
+        >
+          取消
+        </Button>
+        <Button
+          onClick={handleConfirm}
+          variant="contained"
+          size="large"
+          sx={{ fontSize: '1.05rem', minHeight: 48, bgcolor: '#616161', '&:hover': { bgcolor: '#505050' } }}
+        >
+          确定
+        </Button>
+      </DialogActions>
+    </Dialog>
+  </>
   );
 };

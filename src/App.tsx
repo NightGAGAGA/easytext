@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Box,
   ThemeProvider,
@@ -14,6 +14,8 @@ import {
   Tooltip,
   TextField,
   Divider,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material';
 import {
   InvertColors,
@@ -21,6 +23,8 @@ import {
   Stop,
   HelpOutline,
   Search,
+  ExpandMore,
+  ExpandLess,
 } from '@mui/icons-material';
 import { Provider, useDispatch, useSelector } from 'react-redux';
 import {
@@ -31,12 +35,17 @@ import {
   setFileName,
   setFontSizeLevel,
   setTheme,
+  addRecentDocument,
+  removeRecentDocument,
+  RecentDocument,
 } from './store/store';
 import { Toolbar } from './components/Toolbar/Toolbar';
 import { TextEditor } from './components/Editor/TextEditor';
 import { BackupManagerDialog } from './components/BackupManager/BackupManagerDialog';
+import { RecentDocumentsDialog } from './components/RecentDocumentsDialog';
 import { ErrorBoundary } from './components/ErrorBoundary/ErrorBoundary';
 import { AccessibilityUtils } from './accessibility/AccessibilityUtils';
+import { App as CapacitorApp } from '@capacitor/app';
 
 const FONT_SIZE_LABELS = ['20px', '24px', '28px', '32px', '36px'];
 const THEME_OPTIONS: { value: 'default' | 'dark' | 'eye-care'; label: string }[] = [
@@ -64,6 +73,38 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           textTransform: 'none',
+          '&:focus': {
+            outline: 'none',
+          },
+          '&:focus-visible': {
+            outline: 'none',
+          },
+        },
+      },
+    },
+    MuiIconButton: {
+      styleOverrides: {
+        root: {
+          '&:focus': {
+            outline: 'none',
+          },
+          '&:focus-visible': {
+            outline: 'none',
+          },
+        },
+      },
+    },
+    MuiCssBaseline: {
+      styleOverrides: {
+        '*': {
+          '-webkit-tap-highlight-color': 'transparent',
+          '-webkit-touch-callout': 'none',
+          '&:focus': {
+            outline: 'none',
+          },
+          '&:focus-visible': {
+            outline: 'none',
+          },
         },
       },
     },
@@ -75,6 +116,7 @@ const AppContent: React.FC = () => {
   const { theme: appTheme, hasVisited, fontSizeLevel, theme: currentTheme, content, fileName } = useSelector(
     (state: RootState) => state.editor
   );
+  const [previewMode, setPreviewMode] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -90,6 +132,112 @@ const AppContent: React.FC = () => {
     } catch { return ''; }
   });
 
+  // 启动页已移除，使用原生启动背景以提升启动速度
+
+  // 最近文档
+  const [recentOpen, setRecentOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pendingDoc, setPendingDoc] = useState<RecentDocument | null>(null);
+  const { recentDocuments } = useSelector((state: RootState) => state.editor);
+
+  // 自动备份：每10秒检查一次，内容有变化则备份（预览模式下依然生效）
+  const [lastAutoBackupContent, setLastAutoBackupContent] = useState<string | null>(null);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (content && (lastAutoBackupContent === null || content !== lastAutoBackupContent)) {
+        import('./utils/BackupManager').then(({ BackupManager }) => {
+          BackupManager.createBackup(content, fileName);
+        });
+        setLastAutoBackupContent(content);
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [content, fileName, lastAutoBackupContent]);
+
+  // 打开最近文档（带未保存确认）
+  const handleOpenRecent = useCallback((doc: RecentDocument) => {
+    if (content !== savedContent && savedContent !== '') {
+      setPendingDoc(doc);
+      setConfirmOpen(true);
+    } else {
+      dispatch(setContent(doc.content));
+      dispatch(setFileName(doc.fileName));
+      setRecentOpen(false);
+    }
+  }, [content, savedContent, dispatch]);
+
+  const confirmOpenRecent = useCallback(() => {
+    if (pendingDoc) {
+      dispatch(setContent(pendingDoc.content));
+      dispatch(setFileName(pendingDoc.fileName));
+      setSavedContent(pendingDoc.content);
+      try {
+        localStorage.setItem('easyText_savedContent', pendingDoc.content);
+      } catch { /* ignore */ }
+    }
+    setConfirmOpen(false);
+    setPendingDoc(null);
+    setRecentOpen(false);
+  }, [pendingDoc, dispatch]);
+
+  const cancelOpenRecent = useCallback(() => {
+    setConfirmOpen(false);
+    setPendingDoc(null);
+  }, []);
+
+  // 右下角浮动按钮展开/折叠状态
+  const [floatExpanded, setFloatExpanded] = useState(false);
+  const floatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const startFloatTimer = useCallback(() => {
+    if (floatTimerRef.current) {
+      clearTimeout(floatTimerRef.current);
+    }
+    floatTimerRef.current = setTimeout(() => {
+      setFloatExpanded(false);
+    }, 5000);
+  }, []);
+
+  const toggleFloat = () => {
+    const next = !floatExpanded;
+    setFloatExpanded(next);
+    if (next) {
+      startFloatTimer();
+    }
+  };
+
+  const handleFloatAction = (action: () => void) => {
+    action();
+    startFloatTimer();
+  };
+
+  // 点击外部自动缩回右下角浮动按钮
+  useEffect(() => {
+    if (!floatExpanded) return;
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const floatEl = document.querySelector('[data-float-group]');
+      if (floatEl && !floatEl.contains(target)) {
+        setFloatExpanded(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [floatExpanded]);
+
+  // 3秒无操作自动缩回
+  useEffect(() => {
+    if (!floatExpanded) return;
+    const handler = () => startFloatTimer();
+    window.addEventListener('scroll', handler);
+    window.addEventListener('touchstart', handler);
+    return () => {
+      window.removeEventListener('scroll', handler);
+      window.removeEventListener('touchstart', handler);
+      if (floatTimerRef.current) clearTimeout(floatTimerRef.current);
+    };
+  }, [floatExpanded, startFloatTimer]);
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', appTheme);
   }, [appTheme]);
@@ -101,6 +249,49 @@ const AppContent: React.FC = () => {
       localStorage.setItem('easyText_hasVisited', 'true');
     }
   }, [dispatch, hasVisited]);
+
+  // 监听 Android 物理返回按钮：预览模式下退出预览，否则退出应用
+  useEffect(() => {
+    let backHandler: any;
+    const setupBackButton = async () => {
+      backHandler = await CapacitorApp.addListener('backButton', () => {
+        if (previewMode) {
+          setPreviewMode(false);
+        } else {
+          CapacitorApp.exitApp();
+        }
+      });
+    };
+    setupBackButton();
+    return () => {
+      if (backHandler) backHandler.remove();
+    };
+  }, [previewMode]);
+
+  // 夜间自动切换：20:00-06:00自动切换夜间模式（仅首次启动，用户手动切换后不再自动）
+  useEffect(() => {
+    const today = new Date().toDateString();
+    const lastAutoSwitch = localStorage.getItem('easyText_lastAutoSwitch');
+    if (lastAutoSwitch === today) return; // 今天已经切换过，不再自动
+
+    const hour = new Date().getHours();
+    if (hour >= 20 || hour < 6) {
+      dispatch(setTheme('dark'));
+      localStorage.setItem('easyText_lastAutoSwitch', today);
+    }
+  }, [dispatch]);
+
+  // 自动保存到最近文档（导出、新建、导入时）
+  const saveToRecent = useCallback(() => {
+    if (content && fileName && fileName !== '未命名文档') {
+      dispatch(addRecentDocument({ fileName, content }));
+    }
+  }, [content, fileName, dispatch]);
+
+  // 导出时保存到最近文档
+  useEffect(() => {
+    saveToRecent();
+  }, [savedContent]);
 
   // 超过一天未导出提醒
   useEffect(() => {
@@ -311,6 +502,9 @@ const AppContent: React.FC = () => {
     }
   };
 
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+
   const handleSaveContent = (content: string) => {
     setSavedContent(content);
     try {
@@ -356,132 +550,155 @@ const AppContent: React.FC = () => {
         bgcolor: '#f5f5f5',
       }}
     >
-      <Toolbar onOpenBackupManager={() => setBackupOpen(true)} onSave={handleSaveContent} />
+      {!previewMode && <Toolbar onSave={handleSaveContent} onPreview={() => setPreviewMode(true)} onOpenRecent={() => setRecentOpen(true)} />}
 
-      <Box sx={{ flex: 1, position: 'relative' }}>
-        <TextEditor savedContent={savedContent} onLimitExceeded={handleLimitExceeded} />
+      <Box sx={{ flex: 1, position: 'relative', overflow: 'auto' }}>
+        <TextEditor savedContent={savedContent} onLimitExceeded={handleLimitExceeded} previewMode={previewMode} />
 
-        {/* 右下角竖排圆形图标按钮 */}
+        {/* 预览模式：点击屏幕任意位置直接退出 */}
+        {previewMode && (
+          <Box
+            onClick={() => setPreviewMode(false)}
+            onTouchStart={() => setPreviewMode(false)}
+            sx={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 9999,
+              cursor: 'pointer',
+            }}
+          />
+        )}
+
+        {/* 右下角竖排圆形图标按钮 - 非预览模式 */}
+        {!previewMode && (
         <Box
+          data-float-group
           sx={{
             position: 'fixed',
-            right: 16,
-            bottom: 80,
+            right: isMobile ? 8 : 16,
+            bottom: isMobile ? 48 : 80,
             display: 'flex',
             flexDirection: 'column',
-            gap: 1.5,
+            gap: isMobile ? 2 : 2.5,
             zIndex: 10,
           }}
         >
-          <Tooltip title={`字号: ${FONT_SIZE_LABELS[fontSizeLevel]}`} placement="left">
-            <IconButton
-              onClick={handleFontSizeCycle}
-              sx={{
-                width: 52,
-                height: 52,
-                bgcolor: '#ffffff',
-                color: '#616161',
-                border: '1px solid #bdbdbd',
-                borderRadius: '50%',
-                fontSize: '1.3rem',
-                fontWeight: 'bold',
-                '&:hover': { bgcolor: '#f5f5f5', borderColor: '#616161' },
-              }}
-            >
-              A
-            </IconButton>
-          </Tooltip>
+          {floatExpanded && (
+            <>
+              <Tooltip title={`字号: ${FONT_SIZE_LABELS[fontSizeLevel]}`} placement="left">
+                <IconButton
+                  onClick={() => handleFloatAction(handleFontSizeCycle)}
+                  sx={{
+                    width: isMobile ? 52 : 60,
+                    height: isMobile ? 52 : 60,
+                    bgcolor: '#ffffff',
+                    color: '#616161',
+                    border: '1px solid #bdbdbd',
+                    borderRadius: '50%',
+                    fontSize: '1.6rem',
+                    fontWeight: 'bold',
+                    '&:hover': { bgcolor: '#f5f5f5', borderColor: '#616161' },
+                  }}
+                >
+                  A
+                </IconButton>
+              </Tooltip>
 
-          <Tooltip title={`主题: ${THEME_OPTIONS.find((o) => o.value === currentTheme)?.label}`} placement="left">
-            <IconButton
-              onClick={handleThemeCycle}
-              sx={{
-                width: 52,
-                height: 52,
-                bgcolor: '#ffffff',
-                color: '#616161',
-                border: '1px solid #bdbdbd',
-                borderRadius: '50%',
-                '&:hover': { bgcolor: '#f5f5f5', borderColor: '#616161' },
-              }}
-            >
-              <InvertColors sx={{ fontSize: 26 }} />
-            </IconButton>
-          </Tooltip>
+              <Tooltip title={`主题: ${THEME_OPTIONS.find((o) => o.value === currentTheme)?.label}`} placement="left">
+                <IconButton
+                  onClick={() => handleFloatAction(handleThemeCycle)}
+                  sx={{
+                    width: isMobile ? 52 : 60,
+                    height: isMobile ? 52 : 60,
+                    bgcolor: '#ffffff',
+                    color: '#616161',
+                    border: '1px solid #bdbdbd',
+                    borderRadius: '50%',
+                    '&:hover': { bgcolor: '#f5f5f5', borderColor: '#616161' },
+                  }}
+                >
+                  <InvertColors sx={{ fontSize: isMobile ? 28 : 32 }} />
+                </IconButton>
+              </Tooltip>
 
-          <Tooltip title={isSpeaking ? '停止' : '朗读'} placement="left">
+              <Tooltip title={isSpeaking ? '停止' : '朗读'} placement="left">
+                <IconButton
+                  onClick={() => handleFloatAction(handleSpeak)}
+                  sx={{
+                    width: isMobile ? 52 : 60,
+                    height: isMobile ? 52 : 60,
+                    bgcolor: isSpeaking ? '#424242' : '#616161',
+                    color: '#ffffff',
+                    borderRadius: '50%',
+                    '&:hover': { bgcolor: isSpeaking ? '#333333' : '#505050' },
+                  }}
+                >
+                  {isSpeaking ? (
+                    <Stop sx={{ fontSize: isMobile ? 28 : 32 }} />
+                  ) : (
+                    <RecordVoiceOver sx={{ fontSize: isMobile ? 28 : 32 }} />
+                  )}
+                </IconButton>
+              </Tooltip>
+
+              <Tooltip title="查找替换" placement="left">
+                <IconButton
+                  onClick={() => handleFloatAction(() => setFindReplaceOpen(true))}
+                  sx={{
+                    width: isMobile ? 52 : 60,
+                    height: isMobile ? 52 : 60,
+                    bgcolor: '#ffffff',
+                    color: '#616161',
+                    border: '1px solid #bdbdbd',
+                    borderRadius: '50%',
+                    '&:hover': { bgcolor: '#f5f5f5', borderColor: '#616161' },
+                  }}
+                >
+                  <Search sx={{ fontSize: isMobile ? 28 : 32 }} />
+                </IconButton>
+              </Tooltip>
+
+              <Tooltip title="帮助" placement="left">
+                <IconButton
+                  onClick={() => handleFloatAction(() => setGuideOpen(true))}
+                  sx={{
+                    width: isMobile ? 52 : 60,
+                    height: isMobile ? 52 : 60,
+                    bgcolor: '#ffffff',
+                    color: '#616161',
+                    border: '1px solid #bdbdbd',
+                    borderRadius: '50%',
+                    '&:hover': { bgcolor: '#f5f5f5', borderColor: '#616161' },
+                  }}
+                >
+                  <HelpOutline sx={{ fontSize: isMobile ? 28 : 32 }} />
+                </IconButton>
+              </Tooltip>
+            </>
+          )}
+
+          <Tooltip title={floatExpanded ? '收起' : '展开'} placement="left">
             <IconButton
-              onClick={handleSpeak}
+              onClick={toggleFloat}
               sx={{
-                width: 52,
-                height: 52,
-                bgcolor: isSpeaking ? '#424242' : '#616161',
+                width: isMobile ? 56 : 64,
+                height: isMobile ? 56 : 64,
+                bgcolor: '#616161',
                 color: '#ffffff',
                 borderRadius: '50%',
-                '&:hover': { bgcolor: isSpeaking ? '#333333' : '#505050' },
+                '&:hover': { bgcolor: '#505050' },
+                boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
               }}
             >
-              {isSpeaking ? (
-                <Stop sx={{ fontSize: 26 }} />
+              {floatExpanded ? (
+                <ExpandLess sx={{ fontSize: isMobile ? 30 : 34 }} />
               ) : (
-                <RecordVoiceOver sx={{ fontSize: 26 }} />
+                <ExpandMore sx={{ fontSize: isMobile ? 30 : 34 }} />
               )}
             </IconButton>
           </Tooltip>
-
-          <Tooltip title="查找替换" placement="left">
-            <IconButton
-              onClick={() => setFindReplaceOpen(true)}
-              sx={{
-                width: 52,
-                height: 52,
-                bgcolor: '#ffffff',
-                color: '#616161',
-                border: '1px solid #bdbdbd',
-                borderRadius: '50%',
-                '&:hover': { bgcolor: '#f5f5f5', borderColor: '#616161' },
-              }}
-            >
-              <Search sx={{ fontSize: 26 }} />
-            </IconButton>
-          </Tooltip>
-
-          <Tooltip title="帮助" placement="left">
-            <IconButton
-              onClick={() => setGuideOpen(true)}
-              sx={{
-                width: 52,
-                height: 52,
-                bgcolor: '#ffffff',
-                color: '#616161',
-                border: '1px solid #bdbdbd',
-                borderRadius: '50%',
-                '&:hover': { bgcolor: '#f5f5f5', borderColor: '#616161' },
-              }}
-            >
-              <HelpOutline sx={{ fontSize: 26 }} />
-            </IconButton>
-          </Tooltip>
         </Box>
-      </Box>
-
-      {/* 底部版权信息 */}
-      <Box
-        sx={{
-          height: 32,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          bgcolor: '#424242',
-          color: '#bdbdbd',
-          fontSize: '0.85rem',
-          borderTop: '1px solid #616161',
-          px: 2,
-        }}
-      >
-        <Typography sx={{ fontSize: '0.85rem', color: '#bdbdbd' }}>
-          © 2026 Rymond W | EasyText v1.0
-        </Typography>
+        )}
       </Box>
 
       <BackupManagerDialog
@@ -489,6 +706,48 @@ const AppContent: React.FC = () => {
         onClose={() => setBackupOpen(false)}
         onRestore={handleRestore}
       />
+
+      <RecentDocumentsDialog
+        open={recentOpen}
+        onClose={() => setRecentOpen(false)}
+        documents={recentDocuments}
+        onOpen={handleOpenRecent}
+        onDelete={(fileName) => {
+          dispatch(removeRecentDocument(fileName));
+        }}
+      />
+
+      {/* 未保存确认弹窗 */}
+      <Dialog open={confirmOpen} onClose={cancelOpenRecent} fullWidth maxWidth="sm">
+        <DialogTitle sx={{ fontSize: '1.5rem', fontWeight: 'bold' }}>
+          当前文档未保存
+        </DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '1.15rem', lineHeight: 1.8 }}>
+            您当前编辑的文档还未保存，打开其他文档将丢失当前内容。是否继续？
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+          <Button
+            onClick={cancelOpenRecent}
+            variant="outlined"
+            size="large"
+            fullWidth
+            sx={{ fontSize: '1.05rem', minHeight: 48 }}
+          >
+            取消
+          </Button>
+          <Button
+            onClick={confirmOpenRecent}
+            variant="contained"
+            size="large"
+            fullWidth
+            sx={{ fontSize: '1.05rem', minHeight: 48, bgcolor: '#616161', '&:hover': { bgcolor: '#505050' } }}
+          >
+            继续打开
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* 使用指南 */}
       <Dialog open={guideOpen} onClose={() => setGuideOpen(false)} fullWidth maxWidth="sm">
@@ -504,6 +763,15 @@ const AppContent: React.FC = () => {
             • 导入：从文件导入内容（支持TXT、DOC、DOCX、HTML）<br />
             • 备份：手动创建备份，每10秒自动备份一次<br />
             • 导出：导出为TXT、PDF、DOC、DOCX格式
+          </Typography>
+          <Typography sx={{ fontSize: '1.15rem', fontWeight: 'bold', mb: 1 }}>
+            导入说明
+          </Typography>
+          <Typography sx={{ fontSize: '1.05rem', lineHeight: 1.8, mb: 2 }}>
+            • 导入Word文档（DOC/DOCX）时，仅提取纯文字内容<br />
+            • 格式、排版、颜色、图片等非文字内容不予保留<br />
+            • 建议复杂文档先用Word另存为纯文本(.txt)再导入<br />
+            • 部分特殊格式的DOC文件可能无法识别，建议用Word转换后重试
           </Typography>
           <Typography sx={{ fontSize: '1.15rem', fontWeight: 'bold', mb: 1 }}>
             字体调节
@@ -685,6 +953,8 @@ const AppContent: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* 全局成功提示 */}
     </Box>
   );
 };

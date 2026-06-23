@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback } from 'react';
-import { Box, Typography } from '@mui/material';
+import { Box, Typography, useMediaQuery, useTheme } from '@mui/material';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState, setContent } from '../../store/store';
 import { AccessibilityUtils } from '../../accessibility/AccessibilityUtils';
@@ -10,11 +10,14 @@ const CHAR_LIMIT = 100000;
 interface TextEditorProps {
   savedContent?: string;
   onLimitExceeded?: () => void;
+  previewMode?: boolean;
 }
 
-export const TextEditor: React.FC<TextEditorProps> = ({ savedContent = '', onLimitExceeded }) => {
+export const TextEditor: React.FC<TextEditorProps> = ({ savedContent = '', onLimitExceeded, previewMode = false }) => {
   const dispatch = useDispatch();
-  const { content, fontSizeLevel, theme } = useSelector(
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const { content, fontSizeLevel, theme: currentTheme } = useSelector(
     (state: RootState) => state.editor
   );
   const editorRef = useRef<HTMLDivElement>(null);
@@ -28,13 +31,51 @@ export const TextEditor: React.FC<TextEditorProps> = ({ savedContent = '', onLim
   const chineseCount = (plainText.match(/[\u4e00-\u9fa5]/g) || []).length;
   const isSaved = content === savedContent;
 
+  // 保存光标位置（字符偏移量）
+  const saveCursor = (element: HTMLElement): number => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return 0;
+    const range = selection.getRangeAt(0);
+    const preCaretRange = range.cloneRange();
+    preCaretRange.selectNodeContents(element);
+    preCaretRange.setEnd(range.endContainer, range.endOffset);
+    return preCaretRange.toString().length;
+  };
+
+  // 恢复光标位置（字符偏移量）
+  const restoreCursor = (element: HTMLElement, offset: number) => {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
+    let currentOffset = 0;
+    let node;
+    while ((node = walker.nextNode())) {
+      const textLength = node.textContent?.length || 0;
+      if (currentOffset + textLength >= offset) {
+        const pos = Math.min(offset - currentOffset, textLength);
+        range.setStart(node, pos);
+        range.setEnd(node, pos);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        return;
+      }
+      currentOffset += textLength;
+    }
+    // 如果找不到位置，设置到最后
+    range.selectNodeContents(element);
+    range.collapse(false);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  };
+
   useEffect(() => {
     if (editorRef.current && !isUpdatingRef.current) {
-      isUpdatingRef.current = true;
-      if (editorRef.current.innerHTML !== content) {
+      const currentHTML = editorRef.current.innerHTML;
+      if (currentHTML !== content) {
+        const cursorOffset = saveCursor(editorRef.current);
         editorRef.current.innerHTML = content;
+        restoreCursor(editorRef.current, cursorOffset);
       }
-      isUpdatingRef.current = false;
     }
   }, [content]);
 
@@ -67,21 +108,92 @@ export const TextEditor: React.FC<TextEditorProps> = ({ savedContent = '', onLim
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  const handleTouchStart = useCallback((_e: React.TouchEvent) => {
+    if (previewMode) return;
+    const touchStartTime = Date.now();
+
+    const handleTouchEnd = () => {
+      const touchDuration = Date.now() - touchStartTime;
+      const selection = window.getSelection();
+      const hasSelection = selection && selection.toString().length > 0;
+
+      if (touchDuration < 300 && hasSelection) {
+        // 短点击（<300ms）且有选择 → 清除选择并失焦
+        selection.removeAllRanges();
+        if (editorRef.current) {
+          editorRef.current.blur();
+        }
+      } else if (touchDuration >= 300 && hasSelection) {
+        // 长按（>300ms）且形成了选择 → 隐藏键盘但不清除选择
+        // Android 系统长按会自动 focus 编辑器并弹出键盘，这里隐藏键盘
+        if (editorRef.current) {
+          editorRef.current.blur();
+        }
+      }
+
+      document.removeEventListener('touchend', handleTouchEnd);
+      document.removeEventListener('touchcancel', handleTouchEnd);
+    };
+    document.addEventListener('touchend', handleTouchEnd);
+    document.addEventListener('touchcancel', handleTouchEnd);
+  }, [previewMode]);
+
   const handleInput = useCallback(() => {
     if (editorRef.current && !isUpdatingRef.current) {
       const plainText = editorRef.current.innerHTML.replace(/<[^>]+>/g, '');
       if (plainText.length > CHAR_LIMIT) {
-        // 恢复之前的内容，阻止写入
         editorRef.current.innerHTML = content;
         onLimitExceeded?.();
         return;
       }
+      isUpdatingRef.current = true;
       dispatch(setContent(editorRef.current.innerHTML));
+      // 延迟解锁，确保 useEffect 不会重设 innerHTML
+      setTimeout(() => {
+        isUpdatingRef.current = false;
+      }, 50);
     }
   }, [dispatch, content, onLimitExceeded]);
 
+  // 用 MutationObserver 监听 DOM 变化（Android 6.0 WebView 中 onInput 不触发）
+  useEffect(() => {
+    if (!editorRef.current || previewMode) return;
+
+    const editor = editorRef.current;
+    const observer = new MutationObserver(() => {
+      if (!isUpdatingRef.current && editorRef.current) {
+        const currentHTML = editorRef.current.innerHTML;
+        if (currentHTML !== content) {
+          dispatch(setContent(currentHTML));
+        }
+      }
+    });
+
+    observer.observe(editor, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+
+    return () => observer.disconnect();
+  }, [content, previewMode, dispatch]);
+
+  // 用 setInterval 轮询作为最后保障（每 500ms 检查一次内容）
+  useEffect(() => {
+    if (previewMode) return;
+    const interval = setInterval(() => {
+      if (editorRef.current && !isUpdatingRef.current) {
+        const currentHTML = editorRef.current.innerHTML;
+        if (currentHTML !== content) {
+          dispatch(setContent(currentHTML));
+        }
+      }
+    }, 500);
+    return () => clearInterval(interval);
+  }, [content, previewMode, dispatch]);
+
   const getThemeStyles = () => {
-    switch (theme) {
+    switch (currentTheme) {
       case 'dark':
         return {
           backgroundColor: '#212121',
@@ -122,27 +234,30 @@ export const TextEditor: React.FC<TextEditorProps> = ({ savedContent = '', onLim
       sx={{
         flex: 1,
         overflow: 'auto',
-        p: 2,
-        pl: 2,
-        pr: 5,
+        p: isMobile ? 1 : 2,
+        pl: isMobile ? 1 : 2,
+        pr: isMobile ? 2 : 5,
         backgroundColor: themeStyles.backgroundColor,
       }}
     >
       <Box
         ref={editorRef}
-        contentEditable
+        contentEditable={!previewMode}
         suppressContentEditableWarning
-        onInput={handleInput}
+        onInput={previewMode ? undefined : handleInput}
+        onKeyUp={previewMode ? undefined : handleInput}
+        onBlur={previewMode ? undefined : handleInput}
+        onTouchStart={previewMode ? undefined : handleTouchStart}
         aria-label="文字编辑区域"
         role="textbox"
         aria-multiline="true"
         sx={{
-          minHeight: '65vh',
+          minHeight: previewMode ? (isMobile ? '90vh' : '88vh') : (isMobile ? '72vh' : '65vh'),
           maxHeight: '100%',
           overflow: 'auto',
           maxWidth: 1200,
           mx: 'auto',
-          p: 3,
+          p: isMobile ? 3 : 3,
           fontSize,
           lineHeight: 1.8,
           fontFamily:
@@ -153,8 +268,9 @@ export const TextEditor: React.FC<TextEditorProps> = ({ savedContent = '', onLim
           borderRadius: 2,
           outline: 'none',
           '&:focus': {
-            borderColor: '#616161',
-            boxShadow: '0 0 0 3px rgba(97, 97, 97, 0.2)',
+            outline: 'none',
+            boxShadow: 'none',
+            borderColor: themeStyles.borderColor,
           },
           '& p': {
             margin: '0 0 1em 0',
@@ -204,6 +320,24 @@ export const TextEditor: React.FC<TextEditorProps> = ({ savedContent = '', onLim
           }}
         >
           {isSaved ? '● 已保存' : '● 未保存'}
+        </Typography>
+      </Box>
+
+      {/* 版权信息 */}
+      <Box
+        sx={{
+          maxWidth: 1200,
+          mx: 'auto',
+          mt: 1,
+          px: 2,
+          py: 1,
+          textAlign: 'center',
+          color: themeStyles.statusColor,
+          fontSize: '0.85rem',
+        }}
+      >
+        <Typography sx={{ fontSize: '0.85rem', color: themeStyles.statusColor }}>
+          © 2026 Rymond W | EasyText v1.0
         </Typography>
       </Box>
     </Box>

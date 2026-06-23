@@ -1,0 +1,1 @@
+export { RecentDocumentsDialog } from './RecentDocumentsDialog';
